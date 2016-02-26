@@ -13,7 +13,7 @@ from collections import defaultdict
 stochastic_funcs = ['chimpRand', 'chimpNorm', 'Discrete']
 
 sto_tree = """def test_func():
-	a = flip(.5)
+	a = .5
 	b = a+12+chimpRand(10)
 	c = b+a
 	return c"""
@@ -181,14 +181,26 @@ class NameReplacer(ast.NodeTransformer):
 			self.stored_tree[0] += " (Processed)"
 
 			if self.stored_tree[2].__class__ == str:
-				self.stored_tree[3] = self.visit(ast.parse(self.stored_tree[2]))
+				self.stored_tree[3] = ast.fix_missing_locations(self.visit(ast.parse(self.stored_tree[2])))
 			else:
-				self.stored_tree[3] = self.visit(self.stored_tree[2])
+				self.stored_tree[3] = ast.fix_missing_locations(self.visit(self.stored_tree[2]))
 
 			if self.print_trace:
 				print "HELLO: Finished Parsing"
 
 			return self.stored_tree[3]
+
+	def eval(self, data=None):
+		#output = ast.fix_missing_locations(AssignNumbers(self.process(data)).tree)
+		#output.lineno = 0
+		output = self.process(data)
+		try:
+			exec(compile(output, filename='<ast>', mode='exec'))
+			return output
+		except TypeError as e:
+			print "FAILEDDDDDD"
+			print e
+			return output
 
 	def __repr__(self):
 		"""
@@ -243,10 +255,17 @@ class NameReplacer(ast.NodeTransformer):
 		# Visit all children
 		self.generic_visit(node)
 
+		logmass = []
 		for k,v in self.discretevars.iteritems():
 			print("We can call log likelihood here.")
 			print("Not implemented yet. But this means that we removed a discrete func.")
+			#logmass.append(v.logmass())
 
+		# Use enumerate syntax for returning logmass
+		if len(logmass) > 0:
+			return ast.copy_location(ast.Tuple((ast.List(logmass, ast.Load()), node), ast.Load), node)
+
+		# If no logmass, just return and go home
 		return node
 
 	def visit_Call(self, node):
@@ -311,8 +330,8 @@ class NameReplacer(ast.NodeTransformer):
 				return v.body[0].value # Returned should be an expression
 			else:
 				# Cache in class for loading at compile time
-				newname = ast.Name(self.__randString(), ast.Load())
-				self.new_kwargs.append([ast.Name(newname.id, ast.Param()), node])
+				newname = ast.fix_missing_locations(ast.Name(self.__randString(), ast.Load()))
+				self.new_kwargs.append([ast.fix_missing_locations(ast.Name(newname.id, ast.Param())), node])
 				return newname
 		else:
 			return node
@@ -560,6 +579,38 @@ class NameReplacer(ast.NodeTransformer):
 			for f in node._fields:
 				print getattr(node, f)
 		return node
+
+class AssignNumbers(ast.NodeVisitor):
+	def __init__(self, tree):
+		super(AssignNumbers, self).__init__()
+		self.lineno = 0
+
+		try:
+			if tree.__class__ == str:
+				self.tree = ast.parse(tree)
+			else:
+				self.tree = tree
+			self.generic_visit(self.tree)
+		except TypeError as e:
+				raise TypeError("Input Type Incorrect - either tree or string")
+
+	def generic_visit(self, node):
+		for attr, vs in ast.iter_fields(node):
+			if isinstance(vs, ast.AST):
+				vs.lineno = self.lineno
+				vs.col_offset = 0
+				self.lineno += 1
+				return self.visit(vs)
+			elif isinstance(vs, list):
+				for v in vs:
+					if isinstance(v, ast.AST):
+						v.lineno = self.lineno
+						v.col_offset = 0
+						self.lineno += 1
+						return self.visit(v)
+			else:
+				pass
+
 
 class NodeGrapher(ast.NodeVisitor):
 	"""
